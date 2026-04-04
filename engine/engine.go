@@ -5,10 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"time"
 	"trust-layer/agent"
 	"trust-layer/crypto"
-	"trust-layer/logger"
 )
 
 // Envelope is the atomic unit of execution.
@@ -41,13 +39,6 @@ func (e *ExecutionAgent) Execute(id, payload string) (Envelope, []byte, error) {
 	h := hash256([]byte(payload))
 	sig := e.A.Sign(h)
 	env := Envelope{ID: id, Payload: payload, Hash: h}
-	logger.Append(logger.Entry{
-		ExecutionID:     id,
-		AgentID:         e.A.AgentID,
-		Hash:            hex.EncodeToString(h),
-		SignatureStatus: "signed",
-		Timestamp:       time.Now().UTC().Format(time.RFC3339),
-	})
 	return env, sig, nil
 }
 
@@ -58,13 +49,6 @@ type ValidationAgent struct{ A *agent.Agent }
 
 func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte) ([]byte, error) {
 	if err := crypto.Verify(env.Hash, execSig, execPub); err != nil {
-		logger.Append(logger.Entry{
-			ExecutionID:     env.ID,
-			AgentID:         v.A.AgentID,
-			Hash:            hex.EncodeToString(env.Hash),
-			SignatureStatus: "exec_sig_invalid",
-			Timestamp:       time.Now().UTC().Format(time.RFC3339),
-		})
 		return nil, fmt.Errorf("validation rejected: %w", err)
 	}
 	// Re-hash to confirm integrity
@@ -73,13 +57,6 @@ func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte)
 		return nil, errors.New("hash mismatch")
 	}
 	valSig := v.A.Sign(env.Hash)
-	logger.Append(logger.Entry{
-		ExecutionID:     env.ID,
-		AgentID:         v.A.AgentID,
-		Hash:            hex.EncodeToString(env.Hash),
-		SignatureStatus: "validated",
-		Timestamp:       time.Now().UTC().Format(time.RFC3339),
-	})
 	return valSig, nil
 }
 
@@ -112,12 +89,5 @@ func (r *RelayAgent) BuildAnchor(
 		ExecPub: execAgent.PublicKey,
 		ValPub:  valAgent.PublicKey,
 	}
-	logger.Append(logger.Entry{
-		ExecutionID:     "anchor-" + envs[0].ID,
-		AgentID:         r.A.AgentID,
-		Hash:            hex.EncodeToString(stateRoot),
-		SignatureStatus: "anchor_built",
-		Timestamp:       time.Now().UTC().Format(time.RFC3339),
-	})
 	return anchor, nil
 }

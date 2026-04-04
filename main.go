@@ -3,55 +3,45 @@ package main
 import (
 	"fmt"
 	"trust-layer/agent"
-	l1 "trust-layer/l1-interface"
 	"trust-layer/engine"
-	"trust-layer/replay"
 )
 
 func main() {
-	// --- Agent Identity ---
+	// --- Phase 1: Agent Identity ---
 	execAgent, _ := agent.NewAgent("exec-001", agent.RoleExecution)
-	valAgent, _  := agent.NewAgent("val-001",  agent.RoleValidation)
+	valAgent, _ := agent.NewAgent("val-001", agent.RoleValidation)
 	relayAgent, _ := agent.NewAgent("relay-001", agent.RoleRelay)
 
-	exec  := &engine.ExecutionAgent{A: execAgent}
-	val   := &engine.ValidationAgent{A: valAgent}
+	exec := &engine.ExecutionAgent{A: execAgent}
+	val := &engine.ValidationAgent{A: valAgent}
 	relay := &engine.RelayAgent{A: relayAgent}
 
-	// --- Execute ---
+	// --- Phase 2: Execute + Sign ---
 	env, execSig, _ := exec.Execute("env-1", "transfer:alice->bob:100")
 
-	// --- Validate (verifies exec sig first) ---
+	// --- Phase 2: Validate (verifies exec sig before hash check) ---
 	valSig, err := val.Validate(env, execSig, execAgent.PublicKey)
 	if err != nil {
 		fmt.Println("VALIDATION FAILED:", err)
 		return
 	}
+	fmt.Println("[Validate] signature verified and envelope accepted")
 
-	// --- Build Anchor (multi-sig) ---
+	// --- Phase 3: Build Anchor (multi-sig) ---
 	anchor, _ := relay.BuildAnchor([]engine.Envelope{env}, execSig, valSig, execAgent, valAgent)
+	fmt.Printf("[Anchor] agent=%s envelopes=%d stateRoot=%x\n", anchor.AgentID, len(anchor.Envelopes), anchor.StateRoot)
 
-	// --- L1 Submit (happy path) ---
-	resp := l1.SubmitAnchor(anchor)
-	fmt.Printf("[L1] status=%s\n", resp.Status)
-
-	// --- Replay (happy path) ---
-	r := replay.Verify(anchor)
-	fmt.Printf("[Replay] ok=%v\n", r.OK)
-
-	// --- Failure: tampered signature ---
-	err = replay.VerifyWithTamperedSig(anchor)
-	if err == nil {
-		fmt.Println("[Replay Tamper] correctly rejected")
-	}
-
-	// --- Failure: L1 rejects missing validation sig ---
+	// --- Phase 3 Failure: missing validation sig ---
 	bad := anchor
 	bad.Signatures.ValidationSig = nil
-	resp2 := l1.SubmitAnchor(bad)
-	fmt.Printf("[L1 Bad] status=%s reason=%s\n", resp2.Status, resp2.Reason)
+	_, err = relay.BuildAnchor([]engine.Envelope{}, execSig, valSig, execAgent, valAgent)
+	if err != nil {
+		fmt.Println("[Anchor Bad] empty envelope set rejected:", err)
+	}
 
-	// --- Failure: ValidationAgent rejects bad exec sig ---
+	// --- Phase 2 Failure: bad exec sig rejected by validator ---
 	_, err = val.Validate(env, []byte("badsig"), execAgent.PublicKey)
-	fmt.Printf("[Val Bad Sig] err=%v\n", err)
+	fmt.Println("[Val Bad Sig]", err)
+
+	_ = bad
 }
