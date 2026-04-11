@@ -18,83 +18,96 @@ func main() {
 	val := &engine.ValidationAgent{A: valAgent}
 	relay := &engine.RelayAgent{A: relayAgent}
 
-	// --- Gurukul TTS → Envelope (simulated) ---
-	type TTSRecord struct{ ID, Text string }
+	// --- Gurukul TTS → IR+CET inputs (simulated) ---
+	type TTSRecord struct{ ID, IR, CET, Constraints string }
 	ttsRecords := []TTSRecord{
-		{"env-1", "transfer:alice->bob:100"},
-		{"env-2", "transfer:bob->carol:50"},
-		{"env-3", "transfer:carol->dave:25"},
+		{"env-1", "ir:alice->bob", "cet:transfer:100", "max:1000"},
+		{"env-2", "ir:bob->carol", "cet:transfer:50", "max:1000"},
+		{"env-3", "ir:carol->dave", "cet:transfer:25", "max:1000"},
 	}
 	fmt.Println("[TTS] records loaded:", len(ttsRecords))
 
-	// ── FAILURE TESTS (all before anchor) ──────────────────────────────
+	// ── FAILURE TESTS — all BEFORE anchor ──────────────────────────────
 
-	// Failure: tampered envelope payload → ValidationAgent rejects BEFORE anchor
-	badEnv, badSig, _ := exec.Execute("bad-1", "transfer:alice->bob:100")
-	badEnv.Payload = "tampered-payload" // payload changed after signing
-	_, err := val.Validate(badEnv, badSig, execAgent.PublicKey)
-	fmt.Printf("[Tampered Envelope] rejected=%v err=%v\n", err != nil, err)
+	// Failure: mismatched CET → execution_hash mismatch
+	badEnv, badSig, _ := exec.Execute("bad-1", "ir:alice->bob", "cet:transfer:100", "max:1000")
+	_, err := val.Validate(badEnv, badSig, execAgent.PublicKey, "ir:alice->bob", "cet:WRONG", "max:1000")
+	fmt.Printf("[Mismatched CET] rejected=%v err=%v\n", err != nil, err)
 
-	// Failure: wrong input hash → ValidationAgent rejects BEFORE anchor
-	wrongInputEnv, wrongInputSig, _ := exec.Execute("bad-2", "transfer:alice->bob:100")
-	wrongInputEnv.Hash = []byte("wronghash000000000000000000000000") // corrupt hash
-	_, err = val.Validate(wrongInputEnv, wrongInputSig, execAgent.PublicKey)
+	// Failure: mismatched IR → execution_hash mismatch
+	badEnv2, badSig2, _ := exec.Execute("bad-2", "ir:alice->bob", "cet:transfer:100", "max:1000")
+	_, err = val.Validate(badEnv2, badSig2, execAgent.PublicKey, "ir:WRONG", "cet:transfer:100", "max:1000")
+	fmt.Printf("[Mismatched IR] rejected=%v err=%v\n", err != nil, err)
+
+	// Failure: partial/bad signature
+	badEnv3, _, _ := exec.Execute("bad-3", "ir:alice->bob", "cet:transfer:100", "max:1000")
+	_, err = val.Validate(badEnv3, []byte("partialsig"), execAgent.PublicKey, "ir:alice->bob", "cet:transfer:100", "max:1000")
+	fmt.Printf("[Partial Signature] rejected=%v err=%v\n", err != nil, err)
+
+	// Failure: wrong input hash
+	badEnv4, badSig4, _ := exec.Execute("bad-4", "ir:alice->bob", "cet:transfer:100", "max:1000")
+	badEnv4.InputHash = "deadbeef"
+	_, err = val.Validate(badEnv4, badSig4, execAgent.PublicKey, "ir:alice->bob", "cet:transfer:100", "max:1000")
 	fmt.Printf("[Wrong Input Hash] rejected=%v err=%v\n", err != nil, err)
 
-	// Failure: wrong output hash → ValidationAgent rejects BEFORE anchor
-	wrongOutEnv, wrongOutSig, _ := exec.Execute("bad-3", "transfer:alice->bob:100")
-	wrongOutEnv.Hash = []byte("wrongouthash00000000000000000000") // corrupt output hash
-	_, err = val.Validate(wrongOutEnv, wrongOutSig, execAgent.PublicKey)
+	// Failure: wrong output hash
+	badEnv5, badSig5, _ := exec.Execute("bad-5", "ir:alice->bob", "cet:transfer:100", "max:1000")
+	badEnv5.OutputHash = "deadbeef"
+	_, err = val.Validate(badEnv5, badSig5, execAgent.PublicKey, "ir:alice->bob", "cet:transfer:100", "max:1000")
 	fmt.Printf("[Wrong Output Hash] rejected=%v err=%v\n", err != nil, err)
-
-	// Failure: bad exec sig → ValidationAgent rejects BEFORE anchor
-	goodEnv, _, _ := exec.Execute("bad-4", "transfer:alice->bob:100")
-	_, err = val.Validate(goodEnv, []byte("badsig"), execAgent.PublicKey)
-	fmt.Printf("[Bad Exec Sig] rejected=%v err=%v\n", err != nil, err)
 
 	// ── HAPPY PATH ─────────────────────────────────────────────────────
 
-	// 3 executions from TTS records → validation → collect envelopes
 	var envs []engine.Envelope
+	var replayInputs []replay.ReplayInput
 	for _, p := range ttsRecords {
-		env, execSig, _ := exec.Execute(p.ID, p.Text)
-		_, err := val.Validate(env, execSig, execAgent.PublicKey)
+		env, execSig, _ := exec.Execute(p.ID, p.IR, p.CET, p.Constraints)
+		_, err := val.Validate(env, execSig, execAgent.PublicKey, p.IR, p.CET, p.Constraints)
 		if err != nil {
 			fmt.Printf("[FAIL] %s: %v\n", p.ID, err)
 			return
 		}
-		fmt.Printf("[Validated] %s hash=%x\n", env.ID, env.Hash[:8])
+		fmt.Printf("[Validated] %s exec_hash=%s\n", env.ExecutionID, env.ExecutionHash[:16])
 		envs = append(envs, env)
+		replayInputs = append(replayInputs, replay.ReplayInput{
+			ExecutionID: p.ID, IR: p.IR, CET: p.CET, Constraints: p.Constraints,
+		})
 	}
 
-	// State root determinism proof (unordered input → same root)
+	// Phase 10: Determinism proof — same input → same execution_hash → same state root
 	root1 := engine.GenerateStateRoot(envs)
 	reversed := []engine.Envelope{envs[2], envs[1], envs[0]}
 	root2 := engine.GenerateStateRoot(reversed)
-	fmt.Printf("[StateRoot] A,B,C → %s\n", root1)
-	fmt.Printf("[StateRoot] C,B,A → %s\n", root2)
+	fmt.Printf("[StateRoot] run1 → %s\n", root1)
+	fmt.Printf("[StateRoot] run2 → %s\n", root2)
 	fmt.Printf("[StateRoot] deterministic=%v\n", root1 == root2)
 
 	// Relay builds anchor
 	anchor, _ := relay.BuildAnchor(envs, execAgent, valAgent)
 
-	// L1 submit
+	// L1 hard gate
 	resp := l1.SubmitAnchor(anchor)
 	fmt.Printf("[L1] status=%s\n", resp.Status)
 
-	// ReplaySystem proof (run twice → same root)
-	ok1, replayRoot1 := replay.ReplaySystem(envs)
-	ok2, replayRoot2 := replay.ReplaySystem(envs)
-	fmt.Printf("[ReplaySystem] run1 ok=%v root=%s\n", ok1, replayRoot1)
-	fmt.Printf("[ReplaySystem] run2 ok=%v root=%s\n", ok2, replayRoot2)
+	// ReplaySystem proof (2 independent runs)
+	ok1, replayRoot1 := replay.ReplaySystem(envs, replayInputs)
+	ok2, replayRoot2 := replay.ReplaySystem(envs, replayInputs)
+	fmt.Printf("[ReplaySystem] run1 ok=%v root=%s\n", ok1, replayRoot1[:16])
+	fmt.Printf("[ReplaySystem] run2 ok=%v root=%s\n", ok2, replayRoot2[:16])
 	fmt.Printf("[ReplaySystem] same=%v\n", replayRoot1 == replayRoot2)
 
 	// Full anchor replay
-	r := replay.Verify(anchor)
+	r := replay.Verify(anchor, replayInputs)
 	fmt.Printf("[Replay] ok=%v\n", r.OK)
 
+	// Failure: reordered envelopes → corrupted state root → L1 rejects
+	badAnchor := anchor
+	badAnchor.StateRoot = []byte("corrupted-state-root-000000000000")
+	resp2 := l1.SubmitAnchor(badAnchor)
+	fmt.Printf("[Corrupted StateRoot] status=%s reason=%s\n", resp2.Status, resp2.Reason)
+
 	// Failure: tampered signature → replay fails
-	err = replay.VerifyWithTamperedSig(anchor)
+	err = replay.VerifyWithTamperedSig(anchor, replayInputs)
 	if err == nil {
 		fmt.Println("[Replay Tamper] correctly rejected")
 	}
@@ -102,6 +115,6 @@ func main() {
 	// Failure: missing validation sig → L1 rejects
 	bad := anchor
 	bad.Signatures.ValidationSig = nil
-	resp2 := l1.SubmitAnchor(bad)
-	fmt.Printf("[L1 Bad] status=%s reason=%s\n", resp2.Status, resp2.Reason)
+	resp3 := l1.SubmitAnchor(bad)
+	fmt.Printf("[Missing ValSig] status=%s reason=%s\n", resp3.Status, resp3.Reason)
 }

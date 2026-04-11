@@ -12,17 +12,21 @@ import (
 	"trust-layer/logger"
 )
 
-// Envelope is the atomic unit of execution.
+// Envelope is the PDV-compliant atomic unit of execution.
+// All fields are hash-derived — no raw data dependency after hashing.
 type Envelope struct {
-	ID      string
-	Payload string
-	Hash    []byte // sha256 of Payload
+	ExecutionID   string
+	InputHash     string // sha256 of input (IR snapshot)
+	OutputHash    string // sha256 of output (CET)
+	ExecutionHash string // sha256(InputHash + OutputHash + constraints)
+	TraceHash     string // sha256(ExecutionHash) — chain integrity
+	SignerIDs     []string
 }
 
-// Anchor is the final artifact submitted to L1.
+// Anchor is the final PDV artifact submitted to L1.
 type Anchor struct {
 	Envelopes  []Envelope
-	StateRoot  []byte // sha256 of all envelope hashes
+	StateRoot  []byte
 	AgentID    string
 	Signatures crypto.MultiSig
 	ExecPub    []byte
@@ -34,74 +38,115 @@ func hash256(data []byte) []byte {
 	return h[:]
 }
 
-// GenerateStateRoot sorts envelopes by ID then hashes all envelope hashes.
+func hashHex(data string) string {
+	h := sha256.Sum256([]byte(data))
+	return hex.EncodeToString(h[:])
+}
+
+// HashHex is the exported version for use by replay and l1 packages.
+func HashHex(data string) string { return hashHex(data) }
+
+// ComputeExecutionHash derives execution_hash deterministically from
+// IR + CET + constraints only. No timestamp, no randomness.
+func ComputeExecutionHash(ir, cet, constraints string) string {
+	combined := ir + "|" + cet + "|" + constraints
+	return hashHex(combined)
+}
+
+// GenerateStateRoot sorts envelopes by ExecutionID then hashes all ExecutionHashes.
 // Sorting is mandatory: same input in any order must always produce the same root.
 func GenerateStateRoot(envs []Envelope) string {
 	sorted := make([]Envelope, len(envs))
 	copy(sorted, envs)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ExecutionID < sorted[j].ExecutionID })
 	var combined []byte
 	for _, e := range sorted {
-		combined = append(combined, e.Hash...)
+		h, _ := hex.DecodeString(e.ExecutionHash)
+		combined = append(combined, h...)
 	}
 	h := sha256.Sum256(combined)
 	return hex.EncodeToString(h[:])
 }
 
-// ExecutionAgent processes payloads into signed envelopes.
+// ExecutionAgent produces PDV-compliant envelopes from IR+CET inputs.
 type ExecutionAgent struct{ A *agent.Agent }
 
-func (e *ExecutionAgent) Execute(id, payload string) (Envelope, []byte, error) {
-	h := hash256([]byte(payload))
-	sig := e.A.Sign(h)
-	env := Envelope{ID: id, Payload: payload, Hash: h}
+func (e *ExecutionAgent) Execute(id, ir, cet, constraints string) (Envelope, []byte, error) {
+	inputHash := hashHex(ir)
+	outputHash := hashHex(cet)
+	execHash := ComputeExecutionHash(ir, cet, constraints)
+	traceHash := hashHex(execHash)
+
+	execHashBytes, _ := hex.DecodeString(execHash)
+	sig := e.A.Sign(execHashBytes)
+
+	env := Envelope{
+		ExecutionID:   id,
+		InputHash:     inputHash,
+		OutputHash:    outputHash,
+		ExecutionHash: execHash,
+		TraceHash:     traceHash,
+		SignerIDs:     []string{e.A.AgentID},
+	}
 	logger.Append(logger.Entry{
 		ExecutionID:     id,
 		AgentID:         e.A.AgentID,
-		Hash:            hex.EncodeToString(h),
+		Hash:            execHash,
 		SignatureStatus: "signed",
 		Timestamp:       time.Now().UTC().Format(time.RFC3339),
 	})
 	return env, sig, nil
 }
 
-// ValidationAgent verifies the execution signature before accepting an envelope.
-// Authenticity is confirmed first — no point validating data from an untrusted source.
+// ValidationAgent recomputes execution_hash and verifies signature + deterministic integrity.
+// No soft failures — any mismatch is a hard reject.
 type ValidationAgent struct{ A *agent.Agent }
 
-func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte) ([]byte, error) {
-	if err := crypto.Verify(env.Hash, execSig, execPub); err != nil {
+func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte, ir, cet, constraints string) ([]byte, error) {
+	// Recompute execution_hash independently
+	recomputed := ComputeExecutionHash(ir, cet, constraints)
+	if recomputed != env.ExecutionHash {
 		logger.Append(logger.Entry{
-			ExecutionID:     env.ID,
+			ExecutionID:     env.ExecutionID,
 			AgentID:         v.A.AgentID,
-			Hash:            hex.EncodeToString(env.Hash),
+			Hash:            env.ExecutionHash,
+			SignatureStatus: "execution_hash_mismatch",
+			Timestamp:       time.Now().UTC().Format(time.RFC3339),
+		})
+		return nil, fmt.Errorf("execution_hash mismatch: got %s want %s", env.ExecutionHash, recomputed)
+	}
+	// Verify input_hash
+	if hashHex(ir) != env.InputHash {
+		return nil, errors.New("input_hash mismatch")
+	}
+	// Verify output_hash
+	if hashHex(cet) != env.OutputHash {
+		return nil, errors.New("output_hash mismatch")
+	}
+	// Verify execution signature against execution_hash
+	execHashBytes, _ := hex.DecodeString(env.ExecutionHash)
+	if err := crypto.Verify(execHashBytes, execSig, execPub); err != nil {
+		logger.Append(logger.Entry{
+			ExecutionID:     env.ExecutionID,
+			AgentID:         v.A.AgentID,
+			Hash:            env.ExecutionHash,
 			SignatureStatus: "exec_sig_invalid",
 			Timestamp:       time.Now().UTC().Format(time.RFC3339),
 		})
 		return nil, fmt.Errorf("validation rejected: %w", err)
 	}
-	// Verify input hash (re-derive from payload)
-	inputHash := hash256([]byte(env.Payload))
-	if hex.EncodeToString(inputHash) != hex.EncodeToString(env.Hash) {
-		return nil, errors.New("input hash mismatch: envelope hash does not match payload")
-	}
-	// Verify output hash (same as input for pure execution — payload is the output)
-	outputHash := hash256([]byte(env.Payload))
-	if hex.EncodeToString(outputHash) != hex.EncodeToString(env.Hash) {
-		return nil, errors.New("output hash mismatch: envelope hash does not match output")
-	}
-	valSig := v.A.Sign(env.Hash)
+	valSig := v.A.Sign(execHashBytes)
 	logger.Append(logger.Entry{
-		ExecutionID:     env.ID,
+		ExecutionID:     env.ExecutionID,
 		AgentID:         v.A.AgentID,
-		Hash:            hex.EncodeToString(env.Hash),
+		Hash:            env.ExecutionHash,
 		SignatureStatus: "validated",
 		Timestamp:       time.Now().UTC().Format(time.RFC3339),
 	})
 	return valSig, nil
 }
 
-// RelayAgent assembles the Anchor with both signatures over the state root.
+// RelayAgent assembles the PDV Anchor — both agents sign the same execution_hash via state root.
 type RelayAgent struct{ A *agent.Agent }
 
 func (r *RelayAgent) BuildAnchor(
@@ -113,7 +158,6 @@ func (r *RelayAgent) BuildAnchor(
 	}
 	stateRootHex := GenerateStateRoot(envs)
 	stateRoot, _ := hex.DecodeString(stateRootHex)
-	// Both agents sign the state root — covers all envelopes, not just one
 	execSig := execAgent.Sign(stateRoot)
 	valSig := valAgent.Sign(stateRoot)
 	anchor := Anchor{
@@ -128,7 +172,7 @@ func (r *RelayAgent) BuildAnchor(
 		ValPub:  valAgent.PublicKey,
 	}
 	logger.Append(logger.Entry{
-		ExecutionID:     "anchor-" + envs[0].ID,
+		ExecutionID:     "anchor-" + envs[0].ExecutionID,
 		AgentID:         r.A.AgentID,
 		Hash:            stateRootHex,
 		SignatureStatus: "anchor_built",
