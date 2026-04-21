@@ -149,6 +149,22 @@ func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte,
 // RelayAgent assembles the PDV Anchor — both agents sign the same execution_hash via state root.
 type RelayAgent struct{ A *agent.Agent }
 
+// ReplayAgent independently recomputes execution_hash from raw inputs.
+// No shared state with ExecutionAgent or ValidationAgent.
+type ReplayAgent struct{ A *agent.Agent }
+
+func (r *ReplayAgent) Recompute(ir, cet, constraints string) string {
+	hash := ComputeExecutionHash(ir, cet, constraints)
+	logger.Append(logger.Entry{
+		ExecutionID:     "replay-recompute",
+		AgentID:         r.A.AgentID,
+		Hash:            hash,
+		SignatureStatus: "recomputed",
+		Timestamp:       time.Now().UTC().Format(time.RFC3339),
+	})
+	return hash
+}
+
 func (r *RelayAgent) BuildAnchor(
 	envs []Envelope,
 	execAgent, valAgent *agent.Agent,
