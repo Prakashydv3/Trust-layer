@@ -104,7 +104,18 @@ GenerateStateRoot([env-1, env-2, env-3])
   deterministic=true
 ```
 
-## 7. What Changed vs Previous Version
+## 7. Execution Instructions
+
+```bash
+# Clone and run
+git clone https://github.com/Prakashydv3/trust-layer.git
+cd trust-layer
+go run main.go
+```
+
+Expected: all `[PDV]` outputs show `agent_agreement:true`, `[L1] status=accepted`, `[Replay] ok=true`, all failure cases rejected.
+
+## 8. What Changed vs Previous Version
 
 | Area | Before | After (Phase 3) |
 |---|---|---|
