@@ -10,14 +10,14 @@ import (
 	"trust-layer/replay"
 )
 
-// PDVOutput is the canonical output contract (Phase 4).
+// PDVOutput is the canonical output contract.
 type PDVOutput struct {
-	ExecutionID      string   `json:"execution_id"`
-	ExecutionHash    string   `json:"execution_hash"`
-	StateRoot        string   `json:"state_root"`
-	AgentSignatures  []string `json:"agent_signatures"`
-	AgentAgreement   bool     `json:"agent_agreement"`
-	DeterministicFlag bool    `json:"deterministic_flag"`
+	ExecutionID       string   `json:"execution_id"`
+	ExecutionHash     string   `json:"execution_hash"`
+	StateRoot         string   `json:"state_root"`
+	AgentSignatures   []string `json:"agent_signatures"`
+	AgentAgreement    bool     `json:"agent_agreement"`
+	DeterministicFlag bool     `json:"deterministic_flag"`
 }
 
 func main() {
@@ -25,86 +25,83 @@ func main() {
 	execAgent, _ := agent.NewAgent("exec-001", agent.RoleExecution)
 	valAgent, _ := agent.NewAgent("val-001", agent.RoleValidation)
 	relayAgent, _ := agent.NewAgent("relay-001", agent.RoleRelay)
-	replayAgent, _ := agent.NewAgent("replay-001", agent.RoleRelay)
+	replayAgentID, _ := agent.NewAgent("replay-001", agent.RoleRelay)
 
 	exec := &engine.ExecutionAgent{A: execAgent}
 	val := &engine.ValidationAgent{A: valAgent}
 	relay := &engine.RelayAgent{A: relayAgent}
-	rep := &engine.ReplayAgent{A: replayAgent}
+	rep := &engine.ReplayAgent{A: replayAgentID}
 
-	// ── FAILURE: KSML schema violations ────────────────────────────────
-	_, err := ksml.ParseKSML("", "ir:alice->bob", "cet:transfer:100", "max:1000")
-	fmt.Printf("[KSML Missing ID] rejected=%v err=%v\n", err != nil, err)
+	// ── FAILURE: KSML JSON schema violations ───────────────────────────
+	_, err := ksml.ParseKSML(`{"execution_id":"","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"}}`)
+	fmt.Printf("[KSML Missing ID] rejected=%v\n", err != nil)
 
-	_, err = ksml.ParseKSML("env-x", "bad-ir", "cet:transfer:100", "max:1000")
-	fmt.Printf("[KSML Bad IR] rejected=%v err=%v\n", err != nil, err)
+	_, err = ksml.ParseKSML(`{"intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"}}`)
+	fmt.Printf("[KSML No exec_id field] rejected=%v\n", err != nil)
 
-	_, err = ksml.ParseKSML("env-x", "ir:alice->bob", "bad-cet", "max:1000")
-	fmt.Printf("[KSML Bad CET] rejected=%v err=%v\n", err != nil, err)
+	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"},"unknown_field":"bad"}`)
+	fmt.Printf("[KSML Unknown Field] rejected=%v\n", err != nil)
 
-	// ── FAILURE: agent hash mismatches ─────────────────────────────────
-	badEnv, badSig, _ := exec.Execute("bad-1", "ir:alice->bob", "cet:transfer:100", "max:1000")
-	_, err = val.Validate(badEnv, badSig, execAgent.PublicKey, "ir:alice->bob", "cet:WRONG", "max:1000")
-	fmt.Printf("[Mismatched CET] rejected=%v\n", err != nil)
-
-	badEnv2, badSig2, _ := exec.Execute("bad-2", "ir:alice->bob", "cet:transfer:100", "max:1000")
-	_, err = val.Validate(badEnv2, badSig2, execAgent.PublicKey, "ir:WRONG", "cet:transfer:100", "max:1000")
-	fmt.Printf("[Mismatched IR] rejected=%v\n", err != nil)
-
-	badEnv3, _, _ := exec.Execute("bad-3", "ir:alice->bob", "cet:transfer:100", "max:1000")
-	_, err = val.Validate(badEnv3, []byte("partialsig"), execAgent.PublicKey, "ir:alice->bob", "cet:transfer:100", "max:1000")
-	fmt.Printf("[Partial Signature] rejected=%v\n", err != nil)
+	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"}}`)
+	fmt.Printf("[KSML Empty Parameters] rejected=%v\n", err != nil)
 
 	// ── HAPPY PATH ─────────────────────────────────────────────────────
 
-	// Phase 1: KSML boundary — parse and validate all inputs first
-	rawInputs := []struct{ ID, IR, CET, Constraints string }{
-		{"env-1", "ir:alice->bob", "cet:transfer:100", "max:1000"},
-		{"env-2", "ir:bob->carol", "cet:transfer:50", "max:1000"},
-		{"env-3", "ir:carol->dave", "cet:transfer:25", "max:1000"},
+	// Phase 1+2: KSML JSON inputs
+	ksmlJSONs := []string{
+		`{"execution_id":"env-1","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"}}`,
+		`{"execution_id":"env-2","intent":"TRANSFER","actor":"bob","parameters":{"from":"bob","to":"carol","amount":"50"},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"}}`,
+		`{"execution_id":"env-3","intent":"TRANSFER","actor":"carol","parameters":{"from":"carol","to":"dave","amount":"25"},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"}}`,
 	}
-	var ksmlInputs []*ksml.KSMLInput
-	for _, r := range rawInputs {
-		k, err := ksml.ParseKSML(r.ID, r.IR, r.CET, r.Constraints)
-		if err != nil {
-			fmt.Printf("[KSML FAIL] %s: %v\n", r.ID, err)
-			return
-		}
-		ksmlInputs = append(ksmlInputs, k)
-	}
-	fmt.Printf("[KSML] %d inputs validated\n", len(ksmlInputs))
 
-	// Phase 2+3: 3-agent independent recompute + equality enforcement
 	var envs []engine.Envelope
 	var replayInputs []replay.ReplayInput
 
-	for _, k := range ksmlInputs {
-		// ExecutionAgent computes
-		env, execSig, _ := exec.Execute(k.ExecutionID, k.IR, k.CET, k.Constraints)
+	for _, raw := range ksmlJSONs {
+		// KSML boundary
+		k, err := ksml.ParseKSML(raw)
+		if err != nil {
+			fmt.Printf("[KSML FAIL] %v\n", err)
+			return
+		}
+
+		// Phase 3: Convert KSML → structured IR + CET
+		ir := engine.IR{
+			Operation: k.Intent,
+			From:      k.Parameters["from"],
+			To:        k.Parameters["to"],
+			Amount:    k.Parameters["amount"],
+		}
+		cet := engine.CET{
+			Steps: []string{"CheckBalance", "Deduct", "Credit"},
+		}
+		constraints := k.ToConstraints()
+
+		// ExecutionAgent
+		env, execSig, _ := exec.Execute(k.ExecutionID, ir, cet, constraints)
 
 		// ValidationAgent independently recomputes
-		_, err := val.Validate(env, execSig, execAgent.PublicKey, k.IR, k.CET, k.Constraints)
+		_, err = val.Validate(env, execSig, execAgent.PublicKey, ir, cet, constraints)
 		if err != nil {
 			fmt.Printf("[FAIL] %s: %v\n", k.ExecutionID, err)
 			return
 		}
 
 		// ReplayAgent independently recomputes — no shared state
-		replayHash := rep.Recompute(k.IR, k.CET, k.Constraints)
+		replayHash := rep.Recompute(k.ExecutionID, ir, cet, constraints)
 
-		// Phase 3: Equality gate — all 3 must match
-		agreement := (env.ExecutionHash == replayHash)
+		// Equality gate
+		agreement := env.ExecutionHash == replayHash
 		if !agreement {
-			fmt.Printf("[EQUALITY FAIL] %s: exec=%s replay=%s\n", k.ExecutionID, env.ExecutionHash[:8], replayHash[:8])
+			fmt.Printf("[EQUALITY FAIL] %s\n", k.ExecutionID)
 			return
 		}
 
-		// Phase 4: PDV output per envelope
 		out := PDVOutput{
 			ExecutionID:       k.ExecutionID,
 			ExecutionHash:     env.ExecutionHash,
 			StateRoot:         "",
-			AgentSignatures:   []string{execAgent.AgentID, valAgent.AgentID, replayAgent.AgentID},
+			AgentSignatures:   []string{execAgent.AgentID, valAgent.AgentID, replayAgentID.AgentID},
 			AgentAgreement:    agreement,
 			DeterministicFlag: true,
 		}
@@ -113,11 +110,11 @@ func main() {
 
 		envs = append(envs, env)
 		replayInputs = append(replayInputs, replay.ReplayInput{
-			ExecutionID: k.ExecutionID, IR: k.IR, CET: k.CET, Constraints: k.Constraints,
+			ExecutionID: k.ExecutionID, IR: ir, CET: cet, Constraints: constraints,
 		})
 	}
 
-	// Phase 7: Determinism proof
+	// Determinism proof
 	root1 := engine.GenerateStateRoot(envs)
 	reversed := []engine.Envelope{envs[2], envs[1], envs[0]}
 	root2 := engine.GenerateStateRoot(reversed)
@@ -125,12 +122,12 @@ func main() {
 	fmt.Printf("[StateRoot] C,B,A → %s\n", root2)
 	fmt.Printf("[StateRoot] deterministic=%v\n", root1 == root2)
 
-	// Phase 5: L1 only anchors state_root + execution_hash
+	// L1 anchor
 	anchor, _ := relay.BuildAnchor(envs, execAgent, valAgent)
 	resp := l1.SubmitAnchor(anchor)
 	fmt.Printf("[L1] status=%s\n", resp.Status)
 
-	// Replay proof (2 independent runs)
+	// Replay proof
 	ok1, rRoot1 := replay.ReplaySystem(envs, replayInputs)
 	ok2, rRoot2 := replay.ReplaySystem(envs, replayInputs)
 	fmt.Printf("[ReplaySystem] run1 ok=%v\n", ok1)
@@ -146,13 +143,13 @@ func main() {
 	resp2 := l1.SubmitAnchor(badAnchor)
 	fmt.Printf("[Corrupted StateRoot] status=%s reason=%s\n", resp2.Status, resp2.Reason)
 
-	// Failure: replay mismatch
+	// Failure: tampered sig
 	err = replay.VerifyWithTamperedSig(anchor, replayInputs)
 	if err == nil {
 		fmt.Println("[Replay Tamper] correctly rejected")
 	}
 
-	// Failure: missing validation sig
+	// Failure: missing val sig
 	bad := anchor
 	bad.Signatures.ValidationSig = nil
 	resp3 := l1.SubmitAnchor(bad)

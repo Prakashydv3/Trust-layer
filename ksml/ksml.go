@@ -1,55 +1,72 @@
 package ksml
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 )
 
-// KSMLInput is the strict schema for all inputs entering the PDV pipeline.
-// No execution without KSML compliance.
+// KSMLInput is the strict JSON schema for all PDV pipeline inputs.
+// Missing field → REJECT. Unknown structure → REJECT. No partial parsing.
 type KSMLInput struct {
-	ExecutionID string
-	IR          string // Intermediate Representation
-	CET         string // Canonical Execution Tree
-	Constraints string
+	ExecutionID string            `json:"execution_id"`
+	Intent      string            `json:"intent"`
+	Actor       string            `json:"actor"`
+	Parameters  map[string]string `json:"parameters"`
+	Constraints map[string]string `json:"constraints"`
+	Metadata    map[string]string `json:"metadata"`
 }
 
-// Validate enforces strict KSML schema compliance.
-// Rejects malformed inputs before they enter the pipeline.
+// Validate enforces strict schema compliance — all fields mandatory.
 func (k *KSMLInput) Validate() error {
 	if k.ExecutionID == "" {
 		return errors.New("KSML schema violation: missing execution_id")
 	}
-	if k.IR == "" {
-		return errors.New("KSML schema violation: missing IR")
+	if k.Intent == "" {
+		return errors.New("KSML schema violation: missing intent")
 	}
-	if k.CET == "" {
-		return errors.New("KSML schema violation: missing CET")
+	if k.Actor == "" {
+		return errors.New("KSML schema violation: missing actor")
 	}
-	if k.Constraints == "" {
+	if len(k.Parameters) == 0 {
+		return errors.New("KSML schema violation: missing parameters")
+	}
+	if len(k.Constraints) == 0 {
 		return errors.New("KSML schema violation: missing constraints")
 	}
-	// IR must start with "ir:"
-	if !strings.HasPrefix(k.IR, "ir:") {
-		return errors.New("KSML schema violation: IR must start with 'ir:'")
-	}
-	// CET must start with "cet:"
-	if !strings.HasPrefix(k.CET, "cet:") {
-		return errors.New("KSML schema violation: CET must start with 'cet:'")
+	if len(k.Metadata) == 0 {
+		return errors.New("KSML schema violation: missing metadata")
 	}
 	return nil
 }
 
-// ParseKSML converts raw input into validated KSML structure.
-func ParseKSML(id, ir, cet, constraints string) (*KSMLInput, error) {
-	k := &KSMLInput{
-		ExecutionID: id,
-		IR:          ir,
-		CET:         cet,
-		Constraints: constraints,
+// ParseKSML parses and validates a JSON KSML input.
+// Rejects any input that does not conform to the strict schema.
+func ParseKSML(jsonInput string) (*KSMLInput, error) {
+	var k KSMLInput
+	dec := json.NewDecoder(strings.NewReader(jsonInput))
+	dec.DisallowUnknownFields() // unknown structure → REJECT
+	if err := dec.Decode(&k); err != nil {
+		return nil, errors.New("KSML schema violation: " + err.Error())
 	}
 	if err := k.Validate(); err != nil {
 		return nil, err
 	}
-	return k, nil
+	return &k, nil
 }
+
+// ToIR converts KSML intent+actor+parameters into a deterministic IR string.
+func (k *KSMLInput) ToIR() string {
+	return "ir:" + k.Intent + ":" + k.Actor + ":" + k.Parameters["from"] + "->" + k.Parameters["to"]
+}
+
+// ToCET converts KSML parameters into a deterministic CET string.
+func (k *KSMLInput) ToCET() string {
+	return "cet:" + k.Intent + ":" + k.Parameters["amount"]
+}
+
+// ToConstraints converts KSML constraints into a deterministic string.
+func (k *KSMLInput) ToConstraints() string {
+	return "max:" + k.Constraints["max_amount"]
+}
+

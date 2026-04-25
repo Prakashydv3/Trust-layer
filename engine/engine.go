@@ -6,19 +6,45 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 	"trust-layer/agent"
 	"trust-layer/crypto"
 	"trust-layer/logger"
 )
 
+// IR is the structured Intermediate Representation.
+// All hashes derive ONLY from this structure — no raw strings.
+type IR struct {
+	Operation string `json:"operation"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Amount    string `json:"amount"`
+}
+
+// CET is the structured Canonical Execution Tree.
+type CET struct {
+	Steps []string `json:"steps"`
+}
+
+// Canonical returns a deterministic string representation of IR.
+func (ir IR) Canonical() string {
+	return ir.Operation + ":" + ir.From + "->" + ir.To + ":" + ir.Amount
+}
+
+// Canonical returns a deterministic string representation of CET.
+func (cet CET) Canonical() string {
+	h := sha256.Sum256([]byte(strings.Join(cet.Steps, ",")))
+	return hex.EncodeToString(h[:])
+}
+
 // Envelope is the PDV-compliant atomic unit of execution.
 // All fields are hash-derived — no raw data dependency after hashing.
 type Envelope struct {
 	ExecutionID   string
-	InputHash     string // sha256 of input (IR snapshot)
-	OutputHash    string // sha256 of output (CET)
-	ExecutionHash string // sha256(InputHash + OutputHash + constraints)
+	InputHash     string // sha256 of IR.Canonical()
+	OutputHash    string // sha256 of CET.Canonical()
+	ExecutionHash string // sha256(IR.Canonical() + CET.Canonical() + constraints)
 	TraceHash     string // sha256(ExecutionHash) — chain integrity
 	SignerIDs     []string
 }
@@ -47,8 +73,14 @@ func hashHex(data string) string {
 func HashHex(data string) string { return hashHex(data) }
 
 // ComputeExecutionHash derives execution_hash deterministically from
-// IR + CET + constraints only. No timestamp, no randomness.
-func ComputeExecutionHash(ir, cet, constraints string) string {
+// structured IR + CET + constraints only. No timestamp, no randomness.
+func ComputeExecutionHash(ir IR, cet CET, constraints string) string {
+	combined := ir.Canonical() + "|" + cet.Canonical() + "|" + constraints
+	return hashHex(combined)
+}
+
+// ComputeExecutionHashRaw is kept for agent packages that work with raw strings.
+func ComputeExecutionHashRaw(ir, cet, constraints string) string {
 	combined := ir + "|" + cet + "|" + constraints
 	return hashHex(combined)
 }
@@ -68,12 +100,12 @@ func GenerateStateRoot(envs []Envelope) string {
 	return hex.EncodeToString(h[:])
 }
 
-// ExecutionAgent produces PDV-compliant envelopes from IR+CET inputs.
+// ExecutionAgent produces PDV-compliant envelopes from structured IR+CET inputs.
 type ExecutionAgent struct{ A *agent.Agent }
 
-func (e *ExecutionAgent) Execute(id, ir, cet, constraints string) (Envelope, []byte, error) {
-	inputHash := hashHex(ir)
-	outputHash := hashHex(cet)
+func (e *ExecutionAgent) Execute(id string, ir IR, cet CET, constraints string) (Envelope, []byte, error) {
+	inputHash := hashHex(ir.Canonical())
+	outputHash := hashHex(cet.Canonical())
 	execHash := ComputeExecutionHash(ir, cet, constraints)
 	traceHash := hashHex(execHash)
 
@@ -98,12 +130,10 @@ func (e *ExecutionAgent) Execute(id, ir, cet, constraints string) (Envelope, []b
 	return env, sig, nil
 }
 
-// ValidationAgent recomputes execution_hash and verifies signature + deterministic integrity.
-// No soft failures — any mismatch is a hard reject.
+// ValidationAgent recomputes execution_hash from structured IR/CET and verifies.
 type ValidationAgent struct{ A *agent.Agent }
 
-func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte, ir, cet, constraints string) ([]byte, error) {
-	// Recompute execution_hash independently
+func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte, ir IR, cet CET, constraints string) ([]byte, error) {
 	recomputed := ComputeExecutionHash(ir, cet, constraints)
 	if recomputed != env.ExecutionHash {
 		logger.Append(logger.Entry{
@@ -115,15 +145,12 @@ func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte,
 		})
 		return nil, fmt.Errorf("execution_hash mismatch: got %s want %s", env.ExecutionHash, recomputed)
 	}
-	// Verify input_hash
-	if hashHex(ir) != env.InputHash {
+	if hashHex(ir.Canonical()) != env.InputHash {
 		return nil, errors.New("input_hash mismatch")
 	}
-	// Verify output_hash
-	if hashHex(cet) != env.OutputHash {
+	if hashHex(cet.Canonical()) != env.OutputHash {
 		return nil, errors.New("output_hash mismatch")
 	}
-	// Verify execution signature against execution_hash
 	execHashBytes, _ := hex.DecodeString(env.ExecutionHash)
 	if err := crypto.Verify(execHashBytes, execSig, execPub); err != nil {
 		logger.Append(logger.Entry{
@@ -149,14 +176,13 @@ func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte,
 // RelayAgent assembles the PDV Anchor — both agents sign the same execution_hash via state root.
 type RelayAgent struct{ A *agent.Agent }
 
-// ReplayAgent independently recomputes execution_hash from raw inputs.
-// No shared state with ExecutionAgent or ValidationAgent.
+// ReplayAgent independently recomputes execution_hash from structured inputs.
 type ReplayAgent struct{ A *agent.Agent }
 
-func (r *ReplayAgent) Recompute(ir, cet, constraints string) string {
+func (r *ReplayAgent) Recompute(id string, ir IR, cet CET, constraints string) string {
 	hash := ComputeExecutionHash(ir, cet, constraints)
 	logger.Append(logger.Entry{
-		ExecutionID:     "replay-recompute",
+		ExecutionID:     id,
 		AgentID:         r.A.AgentID,
 		Hash:            hash,
 		SignatureStatus: "recomputed",

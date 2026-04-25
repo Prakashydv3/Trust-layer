@@ -151,3 +151,13 @@
 {"execution_id":"env-3","agent_id":"val-001","hash":"74cdc6a42ea10adff08937c151d44b6f2bc7e831fbc4aff370b7c18d4bb0a1d0","signature_status":"validated","timestamp":"2026-04-21T09:47:35Z"}
 {"execution_id":"replay-recompute","agent_id":"replay-001","hash":"74cdc6a42ea10adff08937c151d44b6f2bc7e831fbc4aff370b7c18d4bb0a1d0","signature_status":"recomputed","timestamp":"2026-04-21T09:47:35Z"}
 {"execution_id":"anchor-env-1","agent_id":"relay-001","hash":"5825a113f6d2be0d050f90e871f1e627eec13c23c3ebc22bda81f38990fc2f8e","signature_status":"anchor_built","timestamp":"2026-04-21T09:47:35Z"}
+{"execution_id":"env-1","agent_id":"exec-001","hash":"120a3a256089efda5ce3c863545ef2792ff72abb9c2ec7ffb19b6797ed435683","signature_status":"signed","timestamp":"2026-04-25T06:51:51Z"}
+{"execution_id":"env-1","agent_id":"val-001","hash":"120a3a256089efda5ce3c863545ef2792ff72abb9c2ec7ffb19b6797ed435683","signature_status":"validated","timestamp":"2026-04-25T06:51:51Z"}
+{"execution_id":"env-1","agent_id":"replay-001","hash":"120a3a256089efda5ce3c863545ef2792ff72abb9c2ec7ffb19b6797ed435683","signature_status":"recomputed","timestamp":"2026-04-25T06:51:51Z"}
+{"execution_id":"env-2","agent_id":"exec-001","hash":"dc354c53fbe271e2c913d3f10ea784b3c7a36eb02f04a5f9b090b5b0eb320638","signature_status":"signed","timestamp":"2026-04-25T06:51:51Z"}
+{"execution_id":"env-2","agent_id":"val-001","hash":"dc354c53fbe271e2c913d3f10ea784b3c7a36eb02f04a5f9b090b5b0eb320638","signature_status":"validated","timestamp":"2026-04-25T06:51:51Z"}
+{"execution_id":"env-2","agent_id":"replay-001","hash":"dc354c53fbe271e2c913d3f10ea784b3c7a36eb02f04a5f9b090b5b0eb320638","signature_status":"recomputed","timestamp":"2026-04-25T06:51:51Z"}
+{"execution_id":"env-3","agent_id":"exec-001","hash":"bb075efcd9fa81658799ed0c20b7ccd7f222b9e128fdad57fff49ed3ba767ba4","signature_status":"signed","timestamp":"2026-04-25T06:51:51Z"}
+{"execution_id":"env-3","agent_id":"val-001","hash":"bb075efcd9fa81658799ed0c20b7ccd7f222b9e128fdad57fff49ed3ba767ba4","signature_status":"validated","timestamp":"2026-04-25T06:51:51Z"}
+{"execution_id":"env-3","agent_id":"replay-001","hash":"bb075efcd9fa81658799ed0c20b7ccd7f222b9e128fdad57fff49ed3ba767ba4","signature_status":"recomputed","timestamp":"2026-04-25T06:51:51Z"}
+{"execution_id":"anchor-env-1","agent_id":"relay-001","hash":"7c957f345a90636d2df1d2dbb1cdc9499fe9b5da0414dd8543723b88b0cc889d","signature_status":"anchor_built","timestamp":"2026-04-25T06:51:51Z"}

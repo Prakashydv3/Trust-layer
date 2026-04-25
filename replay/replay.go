@@ -24,17 +24,17 @@ func Verify(anchor engine.Anchor, inputs []ReplayInput) Result {
 		if inp == nil {
 			return fail(e.ExecutionID, "no replay input provided")
 		}
-		// Recompute execution_hash from IR + CET + constraints
+		// Recompute execution_hash from structured IR + CET + constraints
 		recomputed := engine.ComputeExecutionHash(inp.IR, inp.CET, inp.Constraints)
 		if recomputed != e.ExecutionHash {
 			return fail(e.ExecutionID, "execution_hash mismatch: got "+e.ExecutionHash+" want "+recomputed)
 		}
 		// Verify input_hash
-		if engine.HashHex(inp.IR) != e.InputHash {
+		if engine.HashHex(inp.IR.Canonical()) != e.InputHash {
 			return fail(e.ExecutionID, "input_hash mismatch")
 		}
 		// Verify output_hash
-		if engine.HashHex(inp.CET) != e.OutputHash {
+		if engine.HashHex(inp.CET.Canonical()) != e.OutputHash {
 			return fail(e.ExecutionID, "output_hash mismatch")
 		}
 	}
@@ -83,11 +83,11 @@ func VerifyWithTamperedSig(anchor engine.Anchor, inputs []ReplayInput) error {
 	return nil
 }
 
-// ReplayInput holds the raw IR+CET+constraints needed to recompute execution_hash.
+// ReplayInput holds structured IR+CET needed to recompute execution_hash.
 type ReplayInput struct {
 	ExecutionID string
-	IR          string
-	CET         string
+	IR          engine.IR
+	CET         engine.CET
 	Constraints string
 }
 
