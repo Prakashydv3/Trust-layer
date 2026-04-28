@@ -41,6 +41,7 @@ func (cet CET) Canonical() string {
 // Envelope is the PDV-compliant atomic unit of execution.
 // All fields are hash-derived — no raw data dependency after hashing.
 type Envelope struct {
+	TraceID       string
 	ExecutionID   string
 	InputHash     string // sha256 of IR.Canonical()
 	OutputHash    string // sha256 of CET.Canonical()
@@ -103,7 +104,7 @@ func GenerateStateRoot(envs []Envelope) string {
 // ExecutionAgent produces PDV-compliant envelopes from structured IR+CET inputs.
 type ExecutionAgent struct{ A *agent.Agent }
 
-func (e *ExecutionAgent) Execute(id string, ir IR, cet CET, constraints string) (Envelope, []byte, error) {
+func (e *ExecutionAgent) Execute(id, traceID string, ir IR, cet CET, constraints string) (Envelope, []byte, error) {
 	inputHash := hashHex(ir.Canonical())
 	outputHash := hashHex(cet.Canonical())
 	execHash := ComputeExecutionHash(ir, cet, constraints)
@@ -113,6 +114,7 @@ func (e *ExecutionAgent) Execute(id string, ir IR, cet CET, constraints string) 
 	sig := e.A.Sign(execHashBytes)
 
 	env := Envelope{
+		TraceID:       traceID,
 		ExecutionID:   id,
 		InputHash:     inputHash,
 		OutputHash:    outputHash,
@@ -121,6 +123,7 @@ func (e *ExecutionAgent) Execute(id string, ir IR, cet CET, constraints string) 
 		SignerIDs:     []string{e.A.AgentID},
 	}
 	logger.Append(logger.Entry{
+		TraceID:         traceID,
 		ExecutionID:     id,
 		AgentID:         e.A.AgentID,
 		Hash:            execHash,
@@ -137,6 +140,7 @@ func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte,
 	recomputed := ComputeExecutionHash(ir, cet, constraints)
 	if recomputed != env.ExecutionHash {
 		logger.Append(logger.Entry{
+			TraceID:         env.TraceID,
 			ExecutionID:     env.ExecutionID,
 			AgentID:         v.A.AgentID,
 			Hash:            env.ExecutionHash,
@@ -154,6 +158,7 @@ func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte,
 	execHashBytes, _ := hex.DecodeString(env.ExecutionHash)
 	if err := crypto.Verify(execHashBytes, execSig, execPub); err != nil {
 		logger.Append(logger.Entry{
+			TraceID:         env.TraceID,
 			ExecutionID:     env.ExecutionID,
 			AgentID:         v.A.AgentID,
 			Hash:            env.ExecutionHash,
@@ -164,6 +169,7 @@ func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte,
 	}
 	valSig := v.A.Sign(execHashBytes)
 	logger.Append(logger.Entry{
+		TraceID:         env.TraceID,
 		ExecutionID:     env.ExecutionID,
 		AgentID:         v.A.AgentID,
 		Hash:            env.ExecutionHash,
@@ -179,9 +185,10 @@ type RelayAgent struct{ A *agent.Agent }
 // ReplayAgent independently recomputes execution_hash from structured inputs.
 type ReplayAgent struct{ A *agent.Agent }
 
-func (r *ReplayAgent) Recompute(id string, ir IR, cet CET, constraints string) string {
+func (r *ReplayAgent) Recompute(id, traceID string, ir IR, cet CET, constraints string) string {
 	hash := ComputeExecutionHash(ir, cet, constraints)
 	logger.Append(logger.Entry{
+		TraceID:         traceID,
 		ExecutionID:     id,
 		AgentID:         r.A.AgentID,
 		Hash:            hash,

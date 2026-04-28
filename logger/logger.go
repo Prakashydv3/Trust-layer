@@ -10,6 +10,7 @@ import (
 // Logs must be append-only because replay depends on the exact sequence of
 // events; any overwrite would break auditability and tamper-evidence.
 type Entry struct {
+	TraceID         string `json:"trace_id"`
 	ExecutionID     string `json:"execution_id"`
 	AgentID         string `json:"agent_id"`
 	Hash            string `json:"hash"`
