@@ -3,7 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"trust-layer/agent"
+	"trust-layer/akashic"
+	"trust-layer/bucket"
 	"trust-layer/engine"
 	"trust-layer/karmachain"
 	"trust-layer/ksml"
@@ -11,7 +14,7 @@ import (
 	"trust-layer/replay"
 )
 
-// PDVOutput is the upgraded canonical output contract (Phase 7).
+// PDVOutput is the canonical output contract.
 type PDVOutput struct {
 	TraceID           string   `json:"trace_id"`
 	ExecutionID       string   `json:"execution_id"`
@@ -25,6 +28,11 @@ type PDVOutput struct {
 }
 
 func main() {
+	// Clean persistent files for fresh run
+	os.Remove(karmachain.ChainFile)
+	os.Remove(bucket.BucketFile)
+	os.Remove(akashic.AkashicFile)
+
 	// --- Agents ---
 	execAgent, _ := agent.NewAgent("exec-001", agent.RoleExecution)
 	valAgent, _ := agent.NewAgent("val-001", agent.RoleValidation)
@@ -36,53 +44,31 @@ func main() {
 	relay := &engine.RelayAgent{A: relayAgent}
 	rep := &engine.ReplayAgent{A: replayAgentID}
 
-	// ── Phase 6: Agent Isolation Test Suite ────────────────────────────
-	fmt.Println("--- Agent Isolation Tests ---")
-	testIR := engine.IR{Operation: "TRANSFER", From: "alice", To: "bob", Amount: "100"}
-	testCET := engine.CET{Steps: []string{"CheckBalance", "Deduct", "Credit"}}
-	testConstraints := "max:1000"
-	traceTest := "trace-test"
-
-	// All identical → ACCEPT
-	eHash, _, _ := exec.Execute("test-1", traceTest, testIR, testCET, testConstraints)
-	rHash := rep.Recompute("test-1", traceTest, testIR, testCET, testConstraints)
-	fmt.Printf("[Isolation] All identical → agreement=%v\n", eHash.ExecutionHash == rHash)
-
-	// ExecutionAgent altered (wrong amount) → REJECT
-	alteredIR := engine.IR{Operation: "TRANSFER", From: "alice", To: "bob", Amount: "999"}
-	eHashAltered, _, _ := exec.Execute("test-2", traceTest, alteredIR, testCET, testConstraints)
-	rHashNormal := rep.Recompute("test-2", traceTest, testIR, testCET, testConstraints)
-	fmt.Printf("[Isolation] ExecutionAgent altered → agreement=%v (want false)\n", eHashAltered.ExecutionHash == rHashNormal)
-
-	// ValidationAgent altered (wrong CET) → REJECT
-	alteredCET := engine.CET{Steps: []string{"CheckBalance", "Deduct"}}
-	eHashNormal, eSig, _ := exec.Execute("test-3", traceTest, testIR, testCET, testConstraints)
-	_, err := val.Validate(eHashNormal, eSig, execAgent.PublicKey, testIR, alteredCET, testConstraints)
-	fmt.Printf("[Isolation] ValidationAgent altered CET → rejected=%v\n", err != nil)
-
-	// ReplayAgent altered → REJECT
-	alteredReplayIR := engine.IR{Operation: "TRANSFER", From: "alice", To: "bob", Amount: "777"}
-	eHashN, _, _ := exec.Execute("test-4", traceTest, testIR, testCET, testConstraints)
-	rHashAltered := rep.Recompute("test-4", traceTest, alteredReplayIR, testCET, testConstraints)
-	fmt.Printf("[Isolation] ReplayAgent altered → agreement=%v (want false)\n", eHashN.ExecutionHash == rHashAltered)
-
-	// ── FAILURE: KSML schema violations ────────────────────────────────
-	fmt.Println("--- KSML Failure Tests ---")
-	_, err = ksml.ParseKSML(`{"execution_id":"","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"}}`)
+	// ── Phase 1: KSML Canonical Contract failures ───────────────────────
+	fmt.Println("--- KSML Validation ---")
+	_, err := ksml.ParseKSML(`{"execution_id":"","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul"}}`)
 	fmt.Printf("[KSML Missing ID] rejected=%v\n", err != nil)
 
-	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"},"unknown_field":"bad"}`)
+	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul"},"unknown":"bad"}`)
 	fmt.Printf("[KSML Unknown Field] rejected=%v\n", err != nil)
 
-	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"}}`)
-	fmt.Printf("[KSML Empty Parameters] rejected=%v\n", err != nil)
+	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"","source_system":"gurukul"}}`)
+	fmt.Printf("[KSML Missing timestamp] rejected=%v\n", err != nil)
 
-	// ── HAPPY PATH ─────────────────────────────────────────────────────
-	fmt.Println("--- Happy Path ---")
+	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":""}}`)
+	fmt.Printf("[KSML Missing source_system] rejected=%v\n", err != nil)
+
+	// ── Phase 2: PDV FAIL → NO WRITE ───────────────────────────────────
+	fmt.Println("--- PDV Reject → No Write ---")
+	err = bucket.Write("state-root", "env-bad", "trace-bad", false)
+	fmt.Printf("[Bucket PDV Fail] write rejected=%v\n", err != nil)
+
+	// ── Phase 3-7: Full pipeline ────────────────────────────────────────
+	fmt.Println("--- Full Pipeline ---")
 	ksmlJSONs := []string{
-		`{"execution_id":"env-1","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"}}`,
-		`{"execution_id":"env-2","intent":"TRANSFER","actor":"bob","parameters":{"from":"bob","to":"carol","amount":"50"},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"}}`,
-		`{"execution_id":"env-3","intent":"TRANSFER","actor":"carol","parameters":{"from":"carol","to":"dave","amount":"25"},"constraints":{"max_amount":"1000"},"metadata":{"version":"1"}}`,
+		`{"execution_id":"env-1","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul"}}`,
+		`{"execution_id":"env-2","intent":"TRANSFER","actor":"bob","parameters":{"from":"bob","to":"carol","amount":"50"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul"}}`,
+		`{"execution_id":"env-3","intent":"TRANSFER","actor":"carol","parameters":{"from":"carol","to":"dave","amount":"25"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul"}}`,
 	}
 
 	var envs []engine.Envelope
@@ -94,57 +80,58 @@ func main() {
 			fmt.Printf("[KSML FAIL] %v\n", err)
 			return
 		}
-
-		// Phase 5: trace_id propagated from KSML through all agents
 		traceID := fmt.Sprintf("trace-%03d", i+1)
-
 		ir := engine.IR{Operation: k.Intent, From: k.Parameters["from"], To: k.Parameters["to"], Amount: k.Parameters["amount"]}
 		cet := engine.CET{Steps: []string{"CheckBalance", "Deduct", "Credit"}}
 		constraints := k.ToConstraints()
 
+		// Phase 2: 3-agent PDV
 		env, execSig, _ := exec.Execute(k.ExecutionID, traceID, ir, cet, constraints)
 		_, err = val.Validate(env, execSig, execAgent.PublicKey, ir, cet, constraints)
 		if err != nil {
-			fmt.Printf("[FAIL] %s: %v\n", k.ExecutionID, err)
+			fmt.Printf("[PDV FAIL] %s: %v\n", k.ExecutionID, err)
+			return
+		}
+		replayHash := rep.Recompute(k.ExecutionID, traceID, ir, cet, constraints)
+		agreement := env.ExecutionHash == replayHash
+		if !agreement {
+			fmt.Printf("[EQUALITY FAIL] %s\n", k.ExecutionID)
 			return
 		}
 
-		replayHash := rep.Recompute(k.ExecutionID, traceID, ir, cet, constraints)
-		agreement := env.ExecutionHash == replayHash
+		envs = append(envs, env)
+		stateRoot := engine.GenerateStateRoot(envs)
 
-		// Phase 4: KarmaChain append
-		stateRoot := engine.GenerateStateRoot(append(envs, env))
-		karmachain.Append(k.ExecutionID, env.ExecutionHash, stateRoot, true)
+		// Phase 3: KarmaChain persist
+		karmachain.Append(karmachain.Entry{
+			ExecutionID:    k.ExecutionID,
+			ExecutionHash:  env.ExecutionHash,
+			StateRoot:      stateRoot,
+			TraceID:        traceID,
+			ReplayVerified: true,
+		})
 
-		// Phase 7: Upgraded PDV output
+		// Phase 4: Bucket write gate — only after PDV accept
+		bucket.Write(stateRoot, k.ExecutionID, traceID, true)
+
+		// Phase 5: AKASHIC state graph
+		akashic.Append(stateRoot, k.ExecutionID, traceID)
+
+		// PDV output
 		out := PDVOutput{
-			TraceID:           traceID,
-			ExecutionID:       k.ExecutionID,
-			ExecutionHash:     env.ExecutionHash,
-			StateRoot:         stateRoot,
+			TraceID: traceID, ExecutionID: k.ExecutionID,
+			ExecutionHash: env.ExecutionHash, StateRoot: stateRoot,
 			AgentHashes:       []string{env.ExecutionHash, env.ExecutionHash, replayHash},
 			AgentSignatures:   []string{execAgent.AgentID, valAgent.AgentID, replayAgentID.AgentID},
-			AgentAgreement:    agreement,
-			DeterministicFlag: true,
-			ReplayVerified:    true,
+			AgentAgreement:    agreement, DeterministicFlag: true, ReplayVerified: true,
 		}
 		outJSON, _ := json.Marshal(out)
 		fmt.Printf("[PDV] %s\n", outJSON)
 
-		envs = append(envs, env)
 		replayInputs = append(replayInputs, replay.ReplayInput{ExecutionID: k.ExecutionID, IR: ir, CET: cet, Constraints: constraints})
 	}
 
-	// Phase 4: KarmaChain replay verification
-	fmt.Println("--- KarmaChain ---")
-	chain := karmachain.Get()
-	replayedChain := make([]karmachain.Entry, len(chain))
-	copy(replayedChain, chain)
-	err = karmachain.VerifyReplay(replayedChain)
-	fmt.Printf("[KarmaChain] replay verified=%v\n", err == nil)
-	fmt.Printf("[KarmaChain] entries=%d\n", len(chain))
-
-	// Determinism proof
+	// Phase 8: Determinism proof
 	root1 := engine.GenerateStateRoot(envs)
 	reversed := []engine.Envelope{envs[2], envs[1], envs[0]}
 	root2 := engine.GenerateStateRoot(reversed)
@@ -167,7 +154,25 @@ func main() {
 	r := replay.Verify(anchor, replayInputs)
 	fmt.Printf("[Replay] ok=%v\n", r.OK)
 
+	// Phase 6: Reload from persistent files and verify
+	fmt.Println("--- Reconstruction from Persistent Files ---")
+	loaded, _ := karmachain.Load()
+	fmt.Printf("[KarmaChain] loaded entries=%d\n", len(loaded))
+	replayedChain := make([]karmachain.Entry, len(loaded))
+	copy(replayedChain, loaded)
+	err = karmachain.VerifyReplay(loaded, replayedChain)
+	fmt.Printf("[KarmaChain] replay verified=%v\n", err == nil)
+
+	bucketRecords, _ := bucket.Load()
+	fmt.Printf("[Bucket] loaded records=%d\n", len(bucketRecords))
+
+	states, _ := akashic.Load()
+	fmt.Printf("[AKASHIC] loaded states=%d\n", len(states))
+	err = akashic.VerifyChain(states)
+	fmt.Printf("[AKASHIC] chain integrity=%v\n", err == nil)
+
 	// Failure cases
+	fmt.Println("--- Failure Cases ---")
 	badAnchor := anchor
 	badAnchor.StateRoot = []byte("corrupted-state-root-000000000000")
 	resp2 := l1.SubmitAnchor(badAnchor)

@@ -6,6 +6,12 @@ import (
 	"strings"
 )
 
+// Metadata holds required metadata fields per KSML canonical contract.
+type Metadata struct {
+	Timestamp    string `json:"timestamp"`
+	SourceSystem string `json:"source_system"`
+}
+
 // KSMLInput is the strict JSON schema for all PDV pipeline inputs.
 // Missing field → REJECT. Unknown structure → REJECT. No partial parsing.
 type KSMLInput struct {
@@ -14,7 +20,7 @@ type KSMLInput struct {
 	Actor       string            `json:"actor"`
 	Parameters  map[string]string `json:"parameters"`
 	Constraints map[string]string `json:"constraints"`
-	Metadata    map[string]string `json:"metadata"`
+	Metadata    Metadata          `json:"metadata"`
 }
 
 // Validate enforces strict schema compliance — all fields mandatory.
@@ -34,8 +40,11 @@ func (k *KSMLInput) Validate() error {
 	if len(k.Constraints) == 0 {
 		return errors.New("KSML schema violation: missing constraints")
 	}
-	if len(k.Metadata) == 0 {
-		return errors.New("KSML schema violation: missing metadata")
+	if k.Metadata.Timestamp == "" {
+		return errors.New("KSML schema violation: missing metadata.timestamp")
+	}
+	if k.Metadata.SourceSystem == "" {
+		return errors.New("KSML schema violation: missing metadata.source_system")
 	}
 	return nil
 }
