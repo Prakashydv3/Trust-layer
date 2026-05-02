@@ -10,6 +10,7 @@ import (
 type Metadata struct {
 	Timestamp    string `json:"timestamp"`
 	SourceSystem string `json:"source_system"`
+	Version      string `json:"version"`
 }
 
 // KSMLInput is the strict JSON schema for all PDV pipeline inputs.
@@ -45,6 +46,9 @@ func (k *KSMLInput) Validate() error {
 	}
 	if k.Metadata.SourceSystem == "" {
 		return errors.New("KSML schema violation: missing metadata.source_system")
+	}
+	if k.Metadata.Version == "" {
+		return errors.New("KSML schema violation: missing metadata.version")
 	}
 	return nil
 }

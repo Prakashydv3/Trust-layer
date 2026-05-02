@@ -46,17 +46,20 @@ func main() {
 
 	// ── Phase 1: KSML Canonical Contract failures ───────────────────────
 	fmt.Println("--- KSML Validation ---")
-	_, err := ksml.ParseKSML(`{"execution_id":"","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul"}}`)
+	_, err := ksml.ParseKSML(`{"execution_id":"","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul","version":"1.0"}}`)
 	fmt.Printf("[KSML Missing ID] rejected=%v\n", err != nil)
 
-	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul"},"unknown":"bad"}`)
+	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul","version":"1.0"},"unknown":"bad"}`)
 	fmt.Printf("[KSML Unknown Field] rejected=%v\n", err != nil)
 
-	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"","source_system":"gurukul"}}`)
+	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"","source_system":"gurukul","version":"1.0"}}`)
 	fmt.Printf("[KSML Missing timestamp] rejected=%v\n", err != nil)
 
-	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":""}}`)
+	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"","version":"1.0"}}`)
 	fmt.Printf("[KSML Missing source_system] rejected=%v\n", err != nil)
+
+	_, err = ksml.ParseKSML(`{"execution_id":"env-x","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul","version":""}}`)
+	fmt.Printf("[KSML Missing version] rejected=%v\n", err != nil)
 
 	// ── Phase 2: PDV FAIL → NO WRITE ───────────────────────────────────
 	fmt.Println("--- PDV Reject → No Write ---")
@@ -66,9 +69,11 @@ func main() {
 	// ── Phase 3-7: Full pipeline ────────────────────────────────────────
 	fmt.Println("--- Full Pipeline ---")
 	ksmlJSONs := []string{
-		`{"execution_id":"env-1","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul"}}`,
-		`{"execution_id":"env-2","intent":"TRANSFER","actor":"bob","parameters":{"from":"bob","to":"carol","amount":"50"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul"}}`,
-		`{"execution_id":"env-3","intent":"TRANSFER","actor":"carol","parameters":{"from":"carol","to":"dave","amount":"25"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul"}}`,
+		`{"execution_id":"env-1","intent":"TRANSFER","actor":"alice","parameters":{"from":"alice","to":"bob","amount":"100"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul","version":"1.0"}}`,
+		`{"execution_id":"env-2","intent":"TRANSFER","actor":"bob","parameters":{"from":"bob","to":"carol","amount":"50"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul","version":"1.0"}}`,
+		`{"execution_id":"env-3","intent":"TRANSFER","actor":"carol","parameters":{"from":"carol","to":"dave","amount":"25"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul","version":"1.0"}}`,
+		`{"execution_id":"env-4","intent":"TRANSFER","actor":"dave","parameters":{"from":"dave","to":"eve","amount":"10"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul","version":"1.0"}}`,
+		`{"execution_id":"env-5","intent":"TRANSFER","actor":"eve","parameters":{"from":"eve","to":"frank","amount":"5"},"constraints":{"max_amount":"1000"},"metadata":{"timestamp":"2024-01-01T00:00:00Z","source_system":"gurukul","version":"1.0"}}`,
 	}
 
 	var envs []engine.Envelope
@@ -85,19 +90,24 @@ func main() {
 		cet := engine.CET{Steps: []string{"CheckBalance", "Deduct", "Credit"}}
 		constraints := k.ToConstraints()
 
-		// Phase 2: 3-agent PDV
+		// Phase 2: 3-agent PDV — each independently computes execution_hash
 		env, execSig, _ := exec.Execute(k.ExecutionID, traceID, ir, cet, constraints)
+		execHash := env.ExecutionHash
+		valHash := engine.ComputeExecutionHash(ir, cet, constraints) // ValidationAgent recompute
 		_, err = val.Validate(env, execSig, execAgent.PublicKey, ir, cet, constraints)
 		if err != nil {
 			fmt.Printf("[PDV FAIL] %s: %v\n", k.ExecutionID, err)
 			return
 		}
 		replayHash := rep.Recompute(k.ExecutionID, traceID, ir, cet, constraints)
-		agreement := env.ExecutionHash == replayHash
+
+		// Equality gate: execHash == valHash == replayHash — all 3 explicit
+		agreement := execHash == valHash && valHash == replayHash
 		if !agreement {
-			fmt.Printf("[EQUALITY FAIL] %s\n", k.ExecutionID)
+			fmt.Printf("[EQUALITY FAIL] %s exec=%s val=%s replay=%s\n", k.ExecutionID, execHash[:8], valHash[:8], replayHash[:8])
 			return
 		}
+		fmt.Printf("[Equality] %s exec=%s val=%s replay=%s match=%v\n", k.ExecutionID, execHash[:8], valHash[:8], replayHash[:8], agreement)
 
 		envs = append(envs, env)
 		stateRoot := engine.GenerateStateRoot(envs)
@@ -133,7 +143,7 @@ func main() {
 
 	// Phase 8: Determinism proof
 	root1 := engine.GenerateStateRoot(envs)
-	reversed := []engine.Envelope{envs[2], envs[1], envs[0]}
+	reversed := []engine.Envelope{envs[4], envs[3], envs[2], envs[1], envs[0]}
 	root2 := engine.GenerateStateRoot(reversed)
 	fmt.Printf("[StateRoot] A,B,C → %s\n", root1)
 	fmt.Printf("[StateRoot] C,B,A → %s\n", root2)
