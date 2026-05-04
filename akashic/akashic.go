@@ -54,11 +54,27 @@ func Append(stateRoot, executionID, traceID, parentStateHash string) error {
 	return err
 }
 
-// Load reads all states from the akashic file.
+// Load reads all states and verifies state_hash integrity.
 func Load() ([]State, error) {
 	mu.Lock()
 	defer mu.Unlock()
-	return loadLocked()
+	states, err := loadLocked()
+	if err != nil {
+		return nil, err
+	}
+	// Verify every state_hash matches recomputed value
+	for _, s := range states {
+		expected := computeStateHash(s.StateRoot, s.ExecutionID)
+		if s.StateHash != expected {
+			got := s.StateHash
+			if len(got) > 8 {
+				got = got[:8]
+			}
+			return nil, errors.New("akashic: tamper detected for " + s.ExecutionID +
+				" expected=" + expected[:8] + " got=" + got)
+		}
+	}
+	return states, nil
 }
 
 func loadLocked() ([]State, error) {

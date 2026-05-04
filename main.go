@@ -197,10 +197,32 @@ func main() {
 	} else {
 		fmt.Printf("[KarmaChain] loaded entries=%d chain_valid=true\n", len(loaded))
 	}
-	// Simulate tamper: corrupt the file
 	corruptChain()
 	_, err = karmachain.Load()
 	fmt.Printf("[KarmaChain Tamper] detected=%v\n", err != nil)
+
+	// Bucket tamper detection
+	fmt.Println("--- Bucket Tamper Test ---")
+	_, err = bucket.Load()
+	if err == nil {
+		fmt.Println("[Bucket] loaded records valid")
+	}
+	corruptFile(bucket.BucketFile)
+	_, err = bucket.Load()
+	fmt.Printf("[Bucket Tamper] detected=%v\n", err != nil)
+
+	// AKASHIC tamper detection
+	fmt.Println("--- AKASHIC Tamper Test ---")
+	_, err = akashic.Load()
+	if err == nil {
+		fmt.Println("[AKASHIC] loaded states valid")
+	}
+	// Save good copy, corrupt, test, restore
+	akashicData, _ := os.ReadFile(akashic.AkashicFile)
+	corruptFile(akashic.AkashicFile)
+	_, err = akashic.Load()
+	fmt.Printf("[AKASHIC Tamper] detected=%v\n", err != nil)
+	os.WriteFile(akashic.AkashicFile, akashicData, 0644)
 
 	// Phase 2: AKASHIC lineage + branching
 	fmt.Println("--- Phase 2: AKASHIC State Graph ---")
@@ -238,15 +260,12 @@ func main() {
 	results, err := nodes.RunConsensus(allNodes, ir.Canonical(), cet.Canonical(), constraints)
 	fmt.Printf("[Consensus Match] nodes=%d agreement=%v\n", len(results), err == nil)
 
-	// Corrupt Node_B — different input
+	// Corrupt Node_B — inject different IR into consensus directly
 	corruptNode := &nodes.Node{ID: "Node_B_corrupt"}
 	mixedNodes := []*nodes.Node{nodeA, corruptNode, nodeC}
-	_, err = nodes.RunConsensus(mixedNodes, ir.Canonical(), cet.Canonical(), constraints)
-	// Force mismatch by running corrupt node with different data
-	corruptResults, _ := nodes.RunConsensus([]*nodes.Node{nodeA}, ir.Canonical(), cet.Canonical(), constraints)
-	corruptResults2, _ := nodes.RunConsensus([]*nodes.Node{corruptNode}, "WRONG_IR", cet.Canonical(), constraints)
-	mismatch := corruptResults[0].ExecutionHash != corruptResults2[0].ExecutionHash
-	fmt.Printf("[Consensus Mismatch] corrupt_node_detected=%v\n", mismatch)
+	// Override corrupt node's input by wrapping RunConsensus with tampered data for one node
+	_, consensusErr := nodes.RunConsensusWithCorruption(mixedNodes, ir.Canonical(), cet.Canonical(), constraints, "Node_B_corrupt", "WRONG_IR|cet|constraints")
+	fmt.Printf("[Consensus Mismatch] corrupt_node_detected=%v\n", consensusErr != nil)
 
 	// Bucket + AKASHIC reconstruction
 	fmt.Println("--- Reconstruction ---")
@@ -275,13 +294,17 @@ func main() {
 	fmt.Printf("[Missing ValSig] status=%s reason=%s\n", resp3.Status, resp3.Reason)
 }
 
-// corruptChain manually alters the karmachain.json to simulate tampering.
+// corruptChain corrupts karmachain.json to simulate tampering.
 func corruptChain() {
-	data, err := os.ReadFile(karmachain.ChainFile)
+	corruptFile(karmachain.ChainFile)
+}
+
+// corruptFile alters one byte in a file to simulate tampering.
+func corruptFile(path string) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
-	// Replace first occurrence of a hash character to corrupt it
 	corrupted := make([]byte, len(data))
 	copy(corrupted, data)
 	for i, b := range corrupted {
@@ -290,5 +313,5 @@ func corruptChain() {
 			break
 		}
 	}
-	os.WriteFile(karmachain.ChainFile, corrupted, 0644)
+	os.WriteFile(path, corrupted, 0644)
 }

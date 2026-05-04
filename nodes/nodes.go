@@ -26,7 +26,26 @@ type NodeResult struct {
 	ExecutionHash string
 }
 
-// RunConsensus runs all nodes independently and enforces equality.
+// RunConsensusWithCorruption runs consensus where one node receives tampered input.
+// This proves single-call conflict detection — no manual comparison needed.
+func RunConsensusWithCorruption(allNodes []*Node, ir, cet, constraints, corruptNodeID, corruptInput string) ([]NodeResult, error) {
+	results := make([]NodeResult, len(allNodes))
+	for i, n := range allNodes {
+		if n.ID == corruptNodeID {
+			results[i] = NodeResult{NodeID: n.ID, ExecutionHash: n.ComputeHash(corruptInput, "", "")}
+		} else {
+			results[i] = NodeResult{NodeID: n.ID, ExecutionHash: n.ComputeHash(ir, cet, constraints)}
+		}
+	}
+	ref := results[0].ExecutionHash
+	for _, r := range results[1:] {
+		if r.ExecutionHash != ref {
+			return results, errors.New("consensus: node " + r.NodeID +
+				" hash mismatch: got " + r.ExecutionHash[:8] + " want " + ref[:8])
+		}
+	}
+	return results, nil
+}
 // IF all execution_hash equal → ACCEPT
 // ELSE → HARD REJECT
 func RunConsensus(nodes []*Node, ir, cet, constraints string) ([]NodeResult, error) {

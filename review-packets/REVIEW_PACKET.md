@@ -40,8 +40,14 @@ replay.Verify()                        ← independent truth verification, separ
 ```
 [KarmaChain] loaded entries=5 chain_valid=true
 [KarmaChain Tamper] detected=true
+[Bucket] loaded records valid
+[Bucket Tamper]    detected=true
+[AKASHIC] loaded states valid
+[AKASHIC Tamper]   detected=true
 ```
-KarmaChain uses `prev_hash = sha256(prev_entry_fields)`. Altering any byte in the file breaks the chain on next Load().
+- KarmaChain: `prev_hash = sha256(prev_entry_fields)` — any byte change breaks chain on Load()
+- Bucket: `record_hash = sha256(state_root+execution_id+trace_id)` — verified on every Load()
+- AKASHIC: `state_hash = sha256(state_root+execution_id)` — verified on every Load()
 
 ## 4. Branch Graph Proof
 
@@ -59,14 +65,16 @@ env-branch forks from env-2. GetLineage() traces back: env-branch → env-2 → 
 [Consensus Match] nodes=3 agreement=true
 [Consensus Mismatch] corrupt_node_detected=true
 ```
-3 independent nodes each compute execution_hash. Corrupt node with different input → mismatch detected.
+3 independent nodes each compute execution_hash. `RunConsensusWithCorruption` injects wrong input into Node_B in a single call — mismatch detected internally, no manual comparison.
 
-## 6. Equality Gate
+## 6. Equality Gate + Trace Enforcement
 
 ```
+[Missing TraceID]  rejected=true
 [Equality] env-1 exec=120a3a25 val=120a3a25 replay=120a3a25 match=true
 ```
-All 3 agent hashes printed explicitly. `execHash == valHash == replayHash` — no partial acceptance.
+- `trace_id == ""` → hard reject in ExecutionAgent, ValidationAgent, ReplayAgent
+- All 3 agent hashes printed explicitly: `execHash == valHash == replayHash`
 
 ## 7. Execution Instructions
 
