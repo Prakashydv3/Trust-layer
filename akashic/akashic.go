@@ -12,33 +12,35 @@ import (
 
 const AkashicFile = "akashic.json"
 
-// State represents one node in the AKASHIC state graph.
+// State is one node in the AKASHIC state graph.
+// parent_state_hash links to parent — supports branching (multiple children per parent).
 type State struct {
+	StateHash       string `json:"state_hash"`        // sha256(state_root + execution_id)
 	StateRoot       string `json:"state_root"`
-	ParentStateHash string `json:"parent_state_hash"`
+	ParentStateHash string `json:"parent_state_hash"` // "genesis" for root
 	ExecutionID     string `json:"execution_id"`
 	TraceID         string `json:"trace_id"`
 }
 
 var mu sync.Mutex
 
-// Append adds a new state to the linear chain.
-// parent_state_hash = sha256 of previous state_root (or "genesis" for first).
-func Append(stateRoot, executionID, traceID string) error {
+// computeStateHash derives a unique hash for this state node.
+func computeStateHash(stateRoot, executionID string) string {
+	h := sha256.Sum256([]byte(stateRoot + "|" + executionID))
+	return hex.EncodeToString(h[:])
+}
+
+// Append adds a new state node. parentStateHash="" means root (genesis).
+func Append(stateRoot, executionID, traceID, parentStateHash string) error {
 	mu.Lock()
 	defer mu.Unlock()
-
-	// Compute parent hash from last state
-	parentHash := "genesis"
-	states, _ := loadLocked()
-	if len(states) > 0 {
-		h := sha256.Sum256([]byte(states[len(states)-1].StateRoot))
-		parentHash = hex.EncodeToString(h[:])
+	if parentStateHash == "" {
+		parentStateHash = "genesis"
 	}
-
 	s := State{
+		StateHash:       computeStateHash(stateRoot, executionID),
 		StateRoot:       stateRoot,
-		ParentStateHash: parentHash,
+		ParentStateHash: parentStateHash,
 		ExecutionID:     executionID,
 		TraceID:         traceID,
 	}
@@ -80,14 +82,39 @@ func loadLocked() ([]State, error) {
 	return states, nil
 }
 
-// VerifyChain checks parent_state_hash integrity across the chain.
-func VerifyChain(states []State) error {
-	for i := 1; i < len(states); i++ {
-		h := sha256.Sum256([]byte(states[i-1].StateRoot))
-		expected := hex.EncodeToString(h[:])
-		if states[i].ParentStateHash != expected {
-			return errors.New("akashic: chain broken at " + states[i].ExecutionID)
+// VerifyLineage checks every state traces back to genesis.
+func VerifyLineage(states []State) error {
+	index := make(map[string]State)
+	for _, s := range states {
+		index[s.StateHash] = s
+	}
+	for _, s := range states {
+		if s.ParentStateHash == "genesis" {
+			continue
+		}
+		if _, ok := index[s.ParentStateHash]; !ok {
+			return errors.New("akashic: lineage broken for " + s.ExecutionID +
+				" parent=" + s.ParentStateHash[:8])
 		}
 	}
 	return nil
+}
+
+// GetLineage returns the full path from a state back to genesis.
+func GetLineage(states []State, stateHash string) ([]State, error) {
+	index := make(map[string]State)
+	for _, s := range states {
+		index[s.StateHash] = s
+	}
+	var path []State
+	current := stateHash
+	for current != "genesis" {
+		s, ok := index[current]
+		if !ok {
+			return nil, errors.New("akashic: lineage broken at " + current[:8])
+		}
+		path = append([]State{s}, path...)
+		current = s.ParentStateHash
+	}
+	return path, nil
 }

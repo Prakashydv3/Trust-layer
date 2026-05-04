@@ -105,6 +105,9 @@ func GenerateStateRoot(envs []Envelope) string {
 type ExecutionAgent struct{ A *agent.Agent }
 
 func (e *ExecutionAgent) Execute(id, traceID string, ir IR, cet CET, constraints string) (Envelope, []byte, error) {
+	if traceID == "" {
+		return Envelope{}, nil, errors.New("trace_id is mandatory: missing")
+	}
 	inputHash := hashHex(ir.Canonical())
 	outputHash := hashHex(cet.Canonical())
 	execHash := ComputeExecutionHash(ir, cet, constraints)
@@ -137,6 +140,9 @@ func (e *ExecutionAgent) Execute(id, traceID string, ir IR, cet CET, constraints
 type ValidationAgent struct{ A *agent.Agent }
 
 func (v *ValidationAgent) Validate(env Envelope, execSig []byte, execPub []byte, ir IR, cet CET, constraints string) ([]byte, error) {
+	if env.TraceID == "" {
+		return nil, errors.New("trace_id is mandatory: missing in envelope")
+	}
 	recomputed := ComputeExecutionHash(ir, cet, constraints)
 	if recomputed != env.ExecutionHash {
 		logger.Append(logger.Entry{
@@ -186,6 +192,15 @@ type RelayAgent struct{ A *agent.Agent }
 type ReplayAgent struct{ A *agent.Agent }
 
 func (r *ReplayAgent) Recompute(id, traceID string, ir IR, cet CET, constraints string) string {
+	if traceID == "" {
+		logger.Append(logger.Entry{
+			ExecutionID:     id,
+			AgentID:         r.A.AgentID,
+			SignatureStatus: "trace_id_missing",
+			Timestamp:       time.Now().UTC().Format(time.RFC3339),
+		})
+		return ""
+	}
 	hash := ComputeExecutionHash(ir, cet, constraints)
 	logger.Append(logger.Entry{
 		TraceID:         traceID,
